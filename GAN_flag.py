@@ -12,6 +12,9 @@ from black_box_detector.read_data import MyDataset
 #from black_box_detector.blackbox_cnn import test_for_GAN
 from black_box_detector.blackbox_multiperception import test_for_GAN
 from interpretor import Interpretor
+from util import weights_init
+from util import save_checkpoint
+from util import load_checkpoint
 
 print('==> Preparing data..')
 
@@ -24,7 +27,7 @@ lr = 0.0001
 rand_num = 9
 
 #Number of epochs
-num_epochs = 1
+num_epochs = 20
 
 #select min batch size
 BATCH_SIZE = 32
@@ -39,7 +42,7 @@ need_load_checkpoint = True
 save_interval = 1
 
 # Location of checkpoint save folder
-save_folder = './IDSGAN_checkpoint'
+save_folder = 'IDSGAN_checkpoint'
 
 # from what loaction to start training
 load_epoch = 0
@@ -49,6 +52,9 @@ feature_as_noise_selection = 'delegation'
 print('The way of selecting features added noise: ' + feature_as_noise_selection)
 
 z_dimension = 9
+
+reserved_generated_num = 31
+print('reserved_generated_num: %d' % reserved_generated_num)
 
 
 # load dataset in complete form as tensor for networks
@@ -75,7 +81,7 @@ class Generator(nn.Module):
 		)
 
 		self.cnntra1 = nn.Sequential(
-			nn.ConvTranspose1d(256, 128, 1, stride=2, padding=0, bias=False), # 8x11
+			nn.ConvTranspose1d(256, 128, 1, stride=2, padding=0, bias=False), # 8x11 
 			nn.BatchNorm1d(128),
 			#nn.LeakyReLU(),
 			nn.ReLU(True),
@@ -87,10 +93,10 @@ class Generator(nn.Module):
 			nn.ReLU(True),
 			)
 		self.cnntra3 = nn.Sequential(
-			nn.ConvTranspose1d(64, 11, 1, stride=2, padding=0, bias=False), # 25x40
+			nn.ConvTranspose1d(64, 11, 1, stride=2, padding=0, bias=False), # 25x40 
 			#nn.BatchNorm1d(11),
 			#nn.LeakyReLU(),
-			nn.Tanh(),
+			nn.Sigmoid(),
 			)
 
 	def forward(self, z):
@@ -153,13 +159,6 @@ class Discriminator1(nn.Module):
 		x = self.fc(x)
 		return x
 
-def save_checkpoint(model, foldername, filename):
-	print("=> saving checkpoint model to %s" % filename)
-	torch.save(model.state_dict(), os.path.join(foldername, filename))
-
-def load_checkpoint(model, foldername, filename):
-	model.load_state_dict(torch.load(os.path.join(foldername, filename)))
-
 def Usable_Plus_Noise(step):
 	original = 0
 	for m, (usable_sequences, _) in enumerate(train_with_usable_loader):
@@ -174,12 +173,22 @@ def Usable_Plus_Noise(step):
 	return(z, z_batch_size)
 
 def supplant(original, z, step):
-	#unchange_location_list = [4, 5, 34, 33, 39, 32, 2, 3, 0,]
+	sub_unchange_location_list = []
+	#if feature_as_noise_selection == 'random':
+	#	noise_location_list = random.sample(list(range(0,41)), 9)
+	#	if step == 2:
+	#		print(noise_location_list)
+	#elif feature_as_noise_selection == 'delegation':
+	unchange_location_list = [4, 5, 34, 33, 39, 32, 2, 3, 0,11, 40, 35, 23,  1, 22, 31, 28, 36, 9, 29,26,
+		 30, 27, 37, 38, 21, 12, 10, 24, 25,7, 15, 16,13, 18, 17, 8, 20, 14, 6, 19]
+	sub_unchange_location_list = unchange_location_list[:(41-reserved_generated_num)]
+	#print(sub_unchange_location_list)
+	#else:
+	#	noise_location_list = [0]
 	for j in range(original.size()[0]):
 		max_list = torch.max(original[j], 0)[1].numpy()
-		unchange_location_list = [4, 5, 34, 33, 39, 32, 2, 3, 0,]
-			 #11, 40, 35, 23,  1, 22, 31, 28, 36, 9, 29,26, 30, 27, 37, 38, 21, 12, 10, 24, 25,7, 15, 16, 13, 18, 17, 8, 20, 14, 6, 19]
-		for i in unchange_location_list:
+
+		for i in sub_unchange_location_list:
 			print(i)
 			z[j, :, i] = 0
 			z[j, max_list[i], i] = 1
@@ -188,22 +197,33 @@ def supplant(original, z, step):
 discriminator = Discriminator1()
 generator = Generator()
 
-# There may be a problem!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-if load_epoch >= 0 and need_load_checkpoint==True:
-	print("load the epoch from %d" %load_epoch)
-	folder_path = '%s/IDSGAN_epoch_%d' % (save_folder, load_epoch)
-	file_path_D = 'IDSGAN_epoch_%d_D.pkl' % load_epoch
-	load_checkpoint(discriminator, folder_path, file_path_D)
+#discriminator.apply(weights_init)
+#generator.apply(weights_init)
 
-	file_path_G = 'IDSGAN_epoch_%d_G.pkl' % load_epoch
-	load_checkpoint(generator, folder_path, file_path_G)
+start_ep = 0
+if os.listdir(save_folder):
+	if load_epoch >= 0 and need_load_checkpoint==True:
+		print("load the epoch from %d" %load_epoch)
+		folder_path = '%s/IDSGAN_epoch_%d' % (save_folder, load_epoch)
+		file_path_D = 'IDSGAN_epoch_%d_D.pkl' % load_epoch
+		load_checkpoint(discriminator, folder_path, file_path_D)
+
+		file_path_G = 'IDSGAN_epoch_%d_G.pkl' % load_epoch
+		load_checkpoint(generator, folder_path, file_path_G)
+
+		start_ep += load_epoch
 
 # The classification loss of Discriminator, binary classification, 1 -> real sample, 0 -> fake sample
 criterion = nn.BCELoss()
 
 # Define optimizers
-optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=lr)
-optimizer_g = torch.optim.Adam(generator.parameters(), lr=lr*2)
+#optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=lr)
+#optimizer_g = torch.optim.Adam(generator.parameters(), lr=lr*2)
+#optimizer_d = torch.optim.Adam(discriminator.parameters(), lr, betas=(0.5, 0.999))
+#optimizer_g = torch.optim.Adam(generator.parameters(), lr*2, betas=(0.5, 0.999))
+
+optimizer_g = torch.optim.RMSprop(generator.parameters(), lr=lr)
+optimizer_d = torch.optim.RMSprop(discriminator.parameters(), lr=lr)
 
 # Draw 9 samples from the input distribution as a fixed test set
 # Can follow how the generator output evolves
@@ -217,6 +237,7 @@ final_noise = 0
 
 for ep in range(num_epochs):
 	acc = []
+	ep += start_ep
 	for n, (real_sequences, targets) in enumerate(train_loader):
 		targets_after_BB, _ = test_for_GAN('./black_box_detector/12_MLP_checkpoint/blackbox_epoch_2.pkl', Variable(real_sequences), targets)
 		# Cautions!!! The labels get from "test_for_GAN" is typified as LongTensor
@@ -224,14 +245,13 @@ for ep in range(num_epochs):
 		real_sequences = Variable(real_sequences)
 		labels_real = Variable(targets_after_BB)
 
-
 		# Train the discriminator, it tries to discriminate between real and fake (generated) samples
 		
 		outputs = discriminator(real_sequences)
 		#outputs = torch.max(outputs, 1)[1].view(labels_real.size())
 
 		# Cautions!!! The labels get from blackbox is typified as LongTensor
-		#             The labels get from discriminator is typified as FloatTensor
+		#			 The labels get from discriminator is typified as FloatTensor
 		labels_real = labels_real.type(torch.FloatTensor)
 		outputs = outputs.type(torch.FloatTensor)
 		loss_real = criterion(outputs, labels_real)
@@ -251,6 +271,7 @@ for ep in range(num_epochs):
 		outputs = outputs.type(torch.FloatTensor)
 		loss_fake = criterion(outputs, labels_fake)
 		
+
 		optimizer_d.zero_grad()
 		loss_d = loss_real + loss_fake			  # Calculate the total loss
 		loss_d.backward()						   # Backpropagation
@@ -270,13 +291,13 @@ for ep in range(num_epochs):
 							usable_plus_noise, torch.ones(z_batch_size).type(torch.LongTensor))
 		acc.append(accuracy)
 		# Cautions!!! The labels get from blackbox is typified as LongTensor
-		#             The labels get from generator is typified as FloatTensor
+		#			 The labels get from generator is typified as FloatTensor
 		labels_to_normal = Variable(torch.zeros(z_batch_size, 1))
 		outputs = outputs.type(torch.FloatTensor)
 		optimizer_g.zero_grad()
 		loss_g = criterion(outputs, labels_to_normal)   # Calculate the loss
-		loss_g.backward()                          # Backpropagation
-		optimizer_g.step()                         # Update the weights
+		loss_g.backward()						  # Backpropagation
+		optimizer_g.step()						 # Update the weights
 
 		final_noise = usable_plus_noise		
 
@@ -291,18 +312,18 @@ for ep in range(num_epochs):
 
 	print('acc: %.4f' % (float(sum(acc)/len(acc))))
 
+
 	# save checkpoint
-	if float(sum(acc)/len(acc))<5.0:
-		if whether_checkpoint and ep % save_interval == 0:
-			folder_path = '%s/IDSGAN_epoch_%d_%f' % (save_folder, ep, float(sum(acc)/len(acc)))
-			if not os.path.exists(folder_path):
-				os.makedirs(folder_path)
+	if whether_checkpoint and ep % save_interval == 0 and ep != 0:
+		folder_path = '%s/IDSGAN_epoch_%d' % (save_folder, ep)
+		if not os.path.exists(folder_path):
+			os.makedirs(folder_path)
 
-			file_path_D = 'IDSGAN_epoch_%d_D.pkl' % ep
-			save_checkpoint(discriminator, folder_path, file_path_D)
+		file_path_D = 'IDSGAN_epoch_%d_D.pkl' % ep
+		save_checkpoint(discriminator, folder_path, file_path_D)
 
-			file_path_G = 'IDSGAN_epoch_%d_G.pkl' % ep
-			save_checkpoint(generator, folder_path, file_path_G)
+		file_path_G = 'IDSGAN_epoch_%d_G.pkl' % ep
+		save_checkpoint(generator, folder_path, file_path_G)
 
 # write down the final sequence containing noise
-#Interpretor(final_noise)
+Interpretor(final_noise)
